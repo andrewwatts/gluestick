@@ -3,9 +3,7 @@ import path from "path";
 import React from "react";
 import LRU from "lru-cache";
 import Oy from "oy-vey";
-import { renderToString, renderToStaticMarkup } from "react-dom-stream/server";
-import LRURenderCache from "react-dom-stream/lru-render-cache";
-import { renderToStaticMarkup as renderToStaticMarkupEmail } from "react-dom/server";
+import { renderToString, renderToStaticMarkup } from "react-dom/server";
 import { match, RouterContext } from "react-router";
 import {
     runBeforeRoutes as _runBeforeRoutes,
@@ -18,7 +16,6 @@ import _showHelpText, { MISSING_404_TEXT } from "./helpText";
 import getHeaders from "./getHeaders";
 import _getHead from "./getHead";
 import Body from "./Body";
-import { PassThrough } from "stream";
 import { getLogger } from "./logger";
 const _logger = getLogger();
 
@@ -33,10 +30,6 @@ if (process.env.NODE_ENV !== "test") {
 }
 
 const HTML5 = "<!DOCTYPE html>";
-
-const isProduction = process.env.NODE_ENV === "production";
-
-const componentCache = LRURenderCache({max: isProduction ? 500 * 1024 * 1024 : 0});
 
 const DEFAULT_CACHE_TTL = 5 * 1000;
 const _cache = LRU({
@@ -146,20 +139,33 @@ export function prepareOutput(req, {Index, store, getRoutes, fileName}, renderPr
   const currentRoute = getCurrentRoute(renderProps);
   const routeAttrs = getEmailAttributes(currentRoute);
   const isEmail = routeAttrs.email;
-  const reactRenderFunc = isEmail ? renderToStaticMarkupEmail : renderToString;
+  const reactRenderFunc = isEmail ? renderToStaticMarkup: renderToString;
 
   // grab the react generated body stuff. This includes the
   // script tag that hooks up the client side react code.
   const currentState = store.getState();
+
+  let html, css;
+  const renderMethod = config.server.renderMethod;
+  if (renderMethod) {
+    const renderOutput = renderMethod(reactRenderFunc, main);
+    html = renderOutput.html;
+    css = renderOutput.css;
+  }
+  else {
+    html = reactRenderFunc(main);
+    css = "";
+  }
+
   const body = (
     <Body
-      html={reactRenderFunc(main, {cache: componentCache})}
+      html={html}
       initialState={currentState}
       isEmail={isEmail}
       envVariables={envVariables}
     />
   );
-  const head = isEmail ? null : getHead(config, fileName, _webpackIsomorphicTools.assets());
+  const head = isEmail ? null : getHead(config, fileName, css, _webpackIsomorphicTools.assets());
 
   // Grab the html from the project which is stored in the root
   // folder named Index.js. Pass the body and the head to that
@@ -169,17 +175,16 @@ export function prepareOutput(req, {Index, store, getRoutes, fileName}, renderPr
   // Bundle it all up into a string, add the doctype and deliver
   const rootElement = <Index body={body} head={head} req={req} />;
 
-  let responseStream, responseString;
+  let responseString;
   if (isEmail) {
     const generateCustomTemplate = ({bodyContent}) => { return `${bodyContent}`; };
     responseString = Oy.renderTemplate(rootElement, {}, generateCustomTemplate);
   }
   else {
-    responseStream = renderToStaticMarkup(rootElement);
+    responseString = renderToStaticMarkup(rootElement);
   }
 
   return {
-    responseStream,
     responseString,
 
     // The following is returned for testing
@@ -188,34 +193,24 @@ export function prepareOutput(req, {Index, store, getRoutes, fileName}, renderPr
 }
 
 export function cacheAndRender (req, res, currentRoute, status, output, cache=_cache, streamResponse=_streamResponse, logger=_logger, enableCache=true) {
-  const cachePass = new PassThrough();
-  const { responseStream, responseString } = output;
+  const { responseString } = output;
   const cacheKey = getCacheKey(req);
 
   const routeAttrs = getEmailAttributes(currentRoute);
 
-  let cachedResponse = "";
-  cachePass.on("data", (chunk) => {
-    cachedResponse += chunk;
-  });
-  cachePass.on("end", () => {
-    // If caching has been enabled for this route, cache response for
-    // next time it is requested
-    if (currentRoute.cache && enableCache) {
-      const cacheTTL = currentRoute.cacheTTL * 1000 || DEFAULT_CACHE_TTL;
-      logger.debug(`Caching response for ${cacheKey} - ${cacheTTL}`);
-      cache.set(cacheKey, {
-        status,
-        responseString: cachedResponse,
-        docType: routeAttrs.docType
-      }, cacheTTL);
-    }
-  });
+  if (currentRoute.cache && enableCache) {
+    const cacheTTL = currentRoute.cacheTTL * 1000 || DEFAULT_CACHE_TTL;
+    logger.debug(`Caching response for ${cacheKey} - ${cacheTTL}`);
+    cache.set(cacheKey, {
+      status,
+      responseString,
+      docType: routeAttrs.docType
+    }, cacheTTL);
+  }
 
   streamResponse(req, res, {
     status,
     docType: routeAttrs.docType,
-    responseStream: responseStream && responseStream.pipe(cachePass),
     responseString
   });
 }

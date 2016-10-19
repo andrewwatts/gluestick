@@ -8,7 +8,7 @@ import getAssetPathForFile from "../getAssetPathForFile";
 const isProduction = process.env.NODE_ENV === "production";
 
 // eslint-disable-next-line no-unused-vars
-export default (config, entryPoint, assets) => {
+export default (config, entryPoint, css, assets) => {
   const tags = [];
   let key = 0;
   const assetPath = getAssetPath(config);
@@ -16,6 +16,8 @@ export default (config, entryPoint, assets) => {
   if (isProduction) {
     tags.push(<link key={key++} rel="stylesheet" type="text/css" href={getAssetPathForFile(`${entryPoint}`, "styles")} />);
   }
+
+  tags.push(<style data-aphrodite dangerouslySetInnerHTML={{__html: css.content}} />);
 
   tags.push(
     <script key={key++} type="text/javascript" dangerouslySetInnerHTML={{__html: `window.__GS_PUBLIC_PATH__ = ${serialize(assetPath)}; window.__GS_ENVIRONMENT__ = ${serialize(process.env.NODE_ENV)}`}}></script>
@@ -26,12 +28,12 @@ export default (config, entryPoint, assets) => {
     entryPoint: getAssetPathForFile(entryPoint, "javascript")
   };
 
-  tags.push(getScriptLoader(scriptPaths));
+  tags.push(getScriptLoader(scriptPaths, css));
 
   return tags;
 };
 
-function getScriptLoader ({vendor, entryPoint}:Object) {
+function getScriptLoader ({vendor, entryPoint}:Object, css:Object) {
   // eslint-disable-next-line quotes
   const scriptLoader = `
   /*!
@@ -46,6 +48,7 @@ function getScriptLoader ({vendor, entryPoint}:Object) {
     document.addEventListener("DOMContentLoaded", function () {
       $script.ready(["vendor", "entryPoint"], function () {
         window.__startGSApp();
+        StyleSheet.rehydrate(${JSON.stringify(css.renderedClassNames)});
       });
     });
   `;
